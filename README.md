@@ -4,7 +4,7 @@
 
 ## Notes
 
-1. 目前只支持 codex claude vibe PR welcome
+1. 目前只支持 codex (Claude vibe PR welcome)
 2. 目前的语音播报是固定的，你可以自己改
 
 ## 快速开始
