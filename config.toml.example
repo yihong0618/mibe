@@ -6,6 +6,13 @@
 codex_started = "codex启动"
 codex_complete = "codex完成"
 codex_aborted = "codex中断"
+# Codex 提问提醒（request_user_input）
+# 模板变量：{alert_text}（提醒短语）、{question_count}（问题数量）、{first_question}（第一个问题内容）
+# 多问题时只播报“数量 + 第一个问题”
+codex_input_required = "codex需要你确认"
+codex_input_single_template = "{alert_text}。{first_question}"
+codex_input_multi_template = "{alert_text}，共有{question_count}个问题。第一个问题：{first_question}"
+codex_input_fallback_question = "请查看终端中的问题"
 
 # Kimi 相关消息
 kimi_started = "kimi启动"
@@ -16,3 +23,5 @@ kimi_complete = "kimi完成"
 # 如果在指定时间内没有新消息，则认为会话已完成
 # 如果 Kimi 在处理长任务时误判为完成，可以适当增大此值
 kimi_completion_silence = 2.0
+# 提问提醒中朗读的第一个问题最大字符数（避免 TTS 过长）
+codex_input_question_max_chars = 80

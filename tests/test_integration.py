@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Integration tests for mibe module."""
 
+import json
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -14,6 +16,7 @@ class TestEndToEnd:
     @pytest.mark.asyncio
     async def test_full_codex_flow(self, tmp_path):
         """Test full Codex session flow."""
+        path = tmp_path / "codex.jsonl"
         # Create a mock notifier
         mock_notifier = mock.AsyncMock()
         mock_notifier.start_keepalive = mock.Mock()
@@ -23,7 +26,7 @@ class TestEndToEnd:
             "type": "event_msg",
             "payload": {"type": "task_started", "turn_id": 1},
         }
-        await mibe.process_codex_event(start_event, mock_notifier)
+        await mibe.process_codex_event(start_event, path, mock_notifier)
 
         # Verify start behavior
         mock_notifier.speak.assert_called_with(mibe.MESSAGES["codex_started"])
@@ -38,7 +41,7 @@ class TestEndToEnd:
             "type": "event_msg",
             "payload": {"type": "task_complete", "turn_id": 1},
         }
-        await mibe.process_codex_event(complete_event, mock_notifier)
+        await mibe.process_codex_event(complete_event, path, mock_notifier)
 
         # Verify complete behavior
         mock_notifier.stop_keepalive.assert_called_once()
@@ -143,3 +146,29 @@ class TestFileMonitoring:
         assert offsets_latest[latest_file] == 0
         other_file = file1 if latest_file == file2 else file2
         assert offsets_latest[other_file] == other_file.stat().st_size
+
+    @pytest.mark.asyncio
+    async def test_read_new_lines_processes_codex_request_user_input(self, tmp_path):
+        """Test file reader triggers Codex request_user_input TTS."""
+        path = tmp_path / "session.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "request_user_input",
+                "arguments": json.dumps(
+                    {"questions": [{"question": "请确认是否继续部署？"}]}
+                ),
+                "call_id": "call_integration",
+            },
+        }
+        path.write_text(json.dumps(event, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        offsets: dict[Path, int] = {}
+        mock_notifier = mock.AsyncMock()
+
+        await mibe.read_new_lines(path, offsets, mock_notifier, mibe.process_codex_event)
+
+        mock_notifier.speak.assert_called_once()
+        speak_text = mock_notifier.speak.call_args.args[0]
+        assert "请确认是否继续部署" in speak_text

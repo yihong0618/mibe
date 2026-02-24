@@ -148,42 +148,169 @@ class TestProcessCodexEvent:
     """Tests for process_codex_event function."""
 
     @pytest.mark.asyncio
-    async def test_ignore_non_event_msg(self):
+    async def test_ignore_non_event_msg(self, tmp_path):
         event = {"type": "other", "payload": {"type": "task_started"}}
+        path = tmp_path / "codex.jsonl"
 
         mock_notifier = mock.AsyncMock()
-        await mibe.process_codex_event(event, mock_notifier)
+        await mibe.process_codex_event(event, path, mock_notifier)
 
         mock_notifier.speak.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_task_started(self):
+    async def test_task_started(self, tmp_path):
         event = {
             "type": "event_msg",
             "payload": {"type": "task_started", "turn_id": 123},
         }
+        path = tmp_path / "codex.jsonl"
 
         mock_notifier = mock.AsyncMock()
         mock_notifier.start_keepalive = mock.Mock()
-        await mibe.process_codex_event(event, mock_notifier)
+        await mibe.process_codex_event(event, path, mock_notifier)
 
         mock_notifier.speak.assert_called_once()
         mock_notifier.save_and_mute.assert_called_once()
         mock_notifier.start_keepalive.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_task_complete(self):
+    async def test_task_complete(self, tmp_path):
         event = {
             "type": "event_msg",
             "payload": {"type": "task_complete", "turn_id": 123},
         }
+        path = tmp_path / "codex.jsonl"
 
         mock_notifier = mock.AsyncMock()
-        await mibe.process_codex_event(event, mock_notifier)
+        await mibe.process_codex_event(event, path, mock_notifier)
 
         mock_notifier.stop_keepalive.assert_called_once()
         mock_notifier.restore_volume.assert_called_once()
         mock_notifier.speak.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_codex_request_user_input_single_question_speaks_with_template(
+        self, tmp_path
+    ):
+        path = tmp_path / "codex.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "request_user_input",
+                "arguments": '{"questions":[{"question":"你希望修复做到哪一层？"}]}',
+                "call_id": "call_1",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        mock_notifier.start_keepalive = mock.Mock()
+
+        await mibe.process_codex_event(event, path, mock_notifier)
+
+        mock_notifier.stop_keepalive.assert_called_once()
+        mock_notifier.restore_volume.assert_called_once()
+        mock_notifier.speak.assert_called_once()
+        speak_text = mock_notifier.speak.call_args.args[0]
+        assert mibe.MESSAGES["codex_input_required"] in speak_text
+        assert "你希望修复做到哪一层" in speak_text
+        mock_notifier.save_and_mute.assert_not_called()
+        mock_notifier.start_keepalive.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_codex_request_user_input_multi_question_uses_count_and_first(
+        self, tmp_path
+    ):
+        path = tmp_path / "codex.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "request_user_input",
+                "arguments": (
+                    '{"questions":['
+                    '{"question":"第一个问题是什么？"},'
+                    '{"question":"第二个问题是什么？"}'
+                    "]}"
+                ),
+                "call_id": "call_2",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        await mibe.process_codex_event(event, path, mock_notifier)
+
+        speak_text = mock_notifier.speak.call_args.args[0]
+        assert "2个问题" in speak_text
+        assert "第一个问题是什么" in speak_text
+        assert "第二个问题是什么" not in speak_text
+
+    @pytest.mark.asyncio
+    async def test_codex_request_user_input_uses_fallback_on_bad_arguments(
+        self, tmp_path
+    ):
+        path = tmp_path / "codex.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "request_user_input",
+                "arguments": "{not-json",
+                "call_id": "call_3",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        await mibe.process_codex_event(event, path, mock_notifier)
+
+        speak_text = mock_notifier.speak.call_args.args[0]
+        assert mibe.MESSAGES["codex_input_fallback_question"] in speak_text
+
+    @pytest.mark.asyncio
+    async def test_codex_request_user_input_truncates_long_question(self, tmp_path):
+        path = tmp_path / "codex.jsonl"
+        long_question = "A" * 120
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "request_user_input",
+                "arguments": (
+                    '{"questions":[{"question":"'
+                    + long_question
+                    + '"}]}'
+                ),
+                "call_id": "call_4",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        original_max = mibe.SETTINGS["codex_input_question_max_chars"]
+        try:
+            mibe.SETTINGS["codex_input_question_max_chars"] = 20
+            await mibe.process_codex_event(event, path, mock_notifier)
+        finally:
+            mibe.SETTINGS["codex_input_question_max_chars"] = original_max
+
+        speak_text = mock_notifier.speak.call_args.args[0]
+        assert "后续请看终端" in speak_text
+
+    @pytest.mark.asyncio
+    async def test_codex_other_function_call_ignored(self, tmp_path):
+        path = tmp_path / "codex.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "some_other_tool",
+                "arguments": "{}",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        await mibe.process_codex_event(event, path, mock_notifier)
+
+        mock_notifier.speak.assert_not_called()
 
 
 class TestProcessKimiEvent:
