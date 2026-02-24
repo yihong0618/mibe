@@ -78,7 +78,6 @@ kimi_completion_silence = 5.0
             # Restore original value
             mibe.SETTINGS["kimi_completion_silence"] = original_value
 
-
 class TestListSessionFiles:
     """Tests for list_session_files function."""
 
@@ -270,7 +269,7 @@ class TestProcessCodexEvent:
     @pytest.mark.asyncio
     async def test_codex_request_user_input_truncates_long_question(self, tmp_path):
         path = tmp_path / "codex.jsonl"
-        long_question = "A" * 120
+        long_question = " ".join(f"word{i}" for i in range(30))
         event = {
             "type": "response_item",
             "payload": {
@@ -282,14 +281,45 @@ class TestProcessCodexEvent:
         }
 
         mock_notifier = mock.AsyncMock()
-        original_max = mibe.SETTINGS["codex_input_question_max_chars"]
+        original_max = mibe.SETTINGS["codex_input_question_max_words"]
         try:
-            mibe.SETTINGS["codex_input_question_max_chars"] = 20
+            mibe.SETTINGS["codex_input_question_max_words"] = 5
             await mibe.process_codex_event(event, path, mock_notifier)
         finally:
-            mibe.SETTINGS["codex_input_question_max_chars"] = original_max
+            mibe.SETTINGS["codex_input_question_max_words"] = original_max
 
         speak_text = mock_notifier.speak.call_args.args[0]
+        assert "word0 word1 word2 word3 word4" in speak_text
+        assert "word5" not in speak_text
+        assert "后续请看终端" in speak_text
+
+    @pytest.mark.asyncio
+    async def test_codex_request_user_input_truncates_chinese_without_spaces(
+        self, tmp_path
+    ):
+        path = tmp_path / "codex.jsonl"
+        long_question = "请确认是否继续部署到生产环境并通知相关同学"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "request_user_input",
+                "arguments": ('{"questions":[{"question":"' + long_question + '"}]}'),
+                "call_id": "call_4_cn",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        original_max = mibe.SETTINGS["codex_input_question_max_words"]
+        try:
+            mibe.SETTINGS["codex_input_question_max_words"] = 7
+            await mibe.process_codex_event(event, path, mock_notifier)
+        finally:
+            mibe.SETTINGS["codex_input_question_max_words"] = original_max
+
+        speak_text = mock_notifier.speak.call_args.args[0]
+        assert "请确认是否继续" in speak_text
+        assert "部署到生产环境并通知相关同学" not in speak_text
         assert "后续请看终端" in speak_text
 
     @pytest.mark.asyncio

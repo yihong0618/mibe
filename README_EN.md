@@ -92,8 +92,8 @@ kimi_complete = "kimi completed"
 [settings]
 # Silence duration for Kimi completion detection (seconds)
 kimi_completion_silence = 2.0
-# Max chars from the first question to read in TTS (avoid overly long speech)
-codex_input_question_max_chars = 80
+# Max words from the first question to read in TTS (CJK/English-compatible count: English chunks + Han chars)
+codex_input_question_max_words = 160
 ```
 
 ### Codex Input Prompt Templates
@@ -106,7 +106,7 @@ When mibe detects a Codex function call that requires user confirmation, it broa
 - Template placeholders: `{alert_text}`, `{question_count}`, `{first_question}`
 - `request_user_input` multi-question behavior: broadcast summary of the first question (plus total count)
 - Escalation approval behavior: prefer `justification`, otherwise read a command summary from `cmd`
-- Long questions are truncated using `codex_input_question_max_chars` and then users can read the full text in the terminal
+- Long questions are truncated using `codex_input_question_max_words` (CJK/English-compatible count: English chunks + Han chars), and then users can read the full text in the terminal
 
 Copy `config.toml.example` as a starting point:
 

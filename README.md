@@ -92,8 +92,8 @@ kimi_complete = "kimi完成"
 [settings]
 # Kimi 完成检测的静音时间（秒）
 kimi_completion_silence = 2.0
-# 提问提醒里朗读的第一个问题最大字符数（避免 TTS 过长）
-codex_input_question_max_chars = 80
+# 提问提醒里朗读的第一个问题最大词数（中英文兼容计数：英文词块 + 汉字，避免 TTS 过长）
+codex_input_question_max_words = 160
 ```
 
 ### Codex 提问提醒文案模板
@@ -106,7 +106,7 @@ codex_input_question_max_chars = 80
 - 模板变量：`{alert_text}`（提醒短语）、`{question_count}`（问题数量）、`{first_question}`（第一个问题内容）
 - 多问题策略：`request_user_input` 只播报“数量 + 第一个问题”
 - 提权确认策略：优先播报 `justification`，否则播报命令摘要 `cmd`
-- 长问题会按 `codex_input_question_max_chars` 截断，并追加“后续请看终端”
+- 长问题会按 `codex_input_question_max_words`（中英文兼容计数：英文词块 + 汉字）截断，并追加“后续请看终端”
 
 复制 `config.toml.example` 作为起点：
 

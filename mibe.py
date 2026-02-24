@@ -41,7 +41,7 @@ KIMI_COMPLETION_SILENCE = 5.0
 # Configurable settings (can be overridden via config file)
 SETTINGS: dict[str, float] = {
     "kimi_completion_silence": KIMI_COMPLETION_SILENCE,
-    "codex_input_question_max_chars": 80,
+    "codex_input_question_max_words": 160,
 }
 
 # Default TTS messages for each event type.
@@ -348,20 +348,22 @@ def list_session_files(sessions_dir: Path, pattern: str = "*.jsonl") -> list[Pat
 # ---------------------------------------------------------------------------
 
 CODEX_WATCHED_EVENTS = frozenset({"task_started", "task_complete", "turn_aborted"})
+CODEX_TTS_WORD_TOKEN_RE = re.compile(r"[\u3400-\u9fff]|[^\s\u3400-\u9fff]+")
 
 
 def _sanitize_codex_question_text(text: object) -> str:
-    """Normalize question text for TTS and cap length."""
+    """Normalize question text for TTS and cap by CJK/English-compatible tokens."""
     if not isinstance(text, str):
         return ""
     normalized = re.sub(r"\s+", " ", text).strip()
     if not normalized:
         return ""
 
-    max_chars = int(SETTINGS.get("codex_input_question_max_chars", 80))
-    if max_chars > 0 and len(normalized) > max_chars:
+    max_words = int(SETTINGS.get("codex_input_question_max_words", 160))
+    token_iter = list(CODEX_TTS_WORD_TOKEN_RE.finditer(normalized))
+    if max_words > 0 and len(token_iter) > max_words:
         suffix = "，后续请看终端"
-        trimmed = normalized[:max_chars].rstrip()
+        trimmed = normalized[: token_iter[max_words - 1].end()].rstrip()
         return f"{trimmed}{suffix}"
     return normalized
 
