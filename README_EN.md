@@ -53,11 +53,12 @@ uv run python mibe.py monitor
 | Codex `task_complete` | codex completed | Restore volume, then broadcast |
 | Codex `turn_aborted` | codex aborted | Restore volume, then broadcast |
 | Codex `request_user_input` (function call) | codex needs your input + question text | Stop keepalive, restore volume, broadcast, and keep volume unmuted while waiting for user response |
+| Codex `exec_command` (`sandbox_permissions=require_escalated`) | codex needs your input + approval reason/command summary | Stop keepalive, restore volume, broadcast, and keep volume unmuted while waiting for user response |
 | Kimi `TurnBegin` | kimi started | Mute after broadcast, send silent TTS periodically to keep light on |
 | Kimi `TurnEnd` | kimi completed | Restore volume, then broadcast |
 
 Volume is automatically restored on exit (Ctrl+C / SIGTERM).
-When Codex asks a question via `request_user_input`, mibe broadcasts a short question summary.
+When Codex asks via `request_user_input`, or requests an escalation confirmation via `exec_command`, mibe broadcasts a short confirmation summary.
 For multiple questions, it broadcasts the count plus the first question only.
 
 ## Configuration File
@@ -97,11 +98,14 @@ codex_input_question_max_chars = 80
 
 ### Codex Input Prompt Templates
 
-When mibe detects a Codex `request_user_input` function call, it broadcasts a question prompt.
+When mibe detects a Codex function call that requires user confirmation, it broadcasts a prompt.
 
-- Trigger: `response_item -> function_call(name="request_user_input")`
+- Triggers:
+  - `response_item -> function_call(name="request_user_input")`
+  - `response_item -> function_call(name="exec_command")` with `arguments.sandbox_permissions == "require_escalated"`
 - Template placeholders: `{alert_text}`, `{question_count}`, `{first_question}`
-- Multi-question behavior: broadcast summary of the first question (plus total count)
+- `request_user_input` multi-question behavior: broadcast summary of the first question (plus total count)
+- Escalation approval behavior: prefer `justification`, otherwise read a command summary from `cmd`
 - Long questions are truncated using `codex_input_question_max_chars` and then users can read the full text in the terminal
 
 Copy `config.toml.example` as a starting point:

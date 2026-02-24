@@ -360,6 +360,40 @@ def _build_codex_request_user_input_tts(payload: dict) -> tuple[str, int]:
     )
 
 
+def _build_codex_exec_command_escalation_tts(payload: dict) -> tuple[str, bool]:
+    """Build TTS text for exec_command calls requiring escalated permissions."""
+    if payload.get("type") != "function_call":
+        return "", False
+    if payload.get("name") != "exec_command":
+        return "", False
+
+    arguments = payload.get("arguments")
+    parsed: object = None
+    if isinstance(arguments, str) and arguments.strip():
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError:
+            parsed = None
+
+    if not isinstance(parsed, dict):
+        return "", False
+    if parsed.get("sandbox_permissions") != "require_escalated":
+        return "", False
+
+    prompt = _sanitize_codex_question_text(parsed.get("justification"))
+    if not prompt:
+        prompt = _sanitize_codex_question_text(parsed.get("cmd"))
+    if not prompt:
+        prompt = MESSAGES["codex_input_fallback_question"]
+
+    tts_text = MESSAGES["codex_input_single_template"].format(
+        alert_text=MESSAGES["codex_input_required"],
+        question_count=1,
+        first_question=prompt,
+    )
+    return tts_text, True
+
+
 async def _handle_codex_task_event(
     payload: dict, path: Path, notifier: XiaoAiNotifier
 ) -> None:
@@ -405,6 +439,26 @@ async def _handle_codex_request_user_input(
     await notifier.speak(tts_text)
 
 
+async def _handle_codex_exec_command_escalation(
+    payload: dict, path: Path, notifier: XiaoAiNotifier
+) -> None:
+    """Handle exec_command function call events that require user approval."""
+    tts_text, matched = _build_codex_exec_command_escalation_tts(payload)
+    if not matched:
+        return
+
+    call_id = payload.get("call_id")
+    print(
+        "[mibe] codex exec_command require_escalated "
+        f"call_id={call_id} path={path}",
+        flush=True,
+    )
+
+    await notifier.stop_keepalive()
+    await notifier.restore_volume()
+    await notifier.speak(tts_text)
+
+
 async def process_codex_event(
     event: dict, path: Path, notifier: XiaoAiNotifier
 ) -> None:
@@ -418,6 +472,7 @@ async def process_codex_event(
         await _handle_codex_task_event(payload, path, notifier)
     elif event_kind == "response_item":
         await _handle_codex_request_user_input(payload, path, notifier)
+        await _handle_codex_exec_command_escalation(payload, path, notifier)
 
 
 # ---------------------------------------------------------------------------

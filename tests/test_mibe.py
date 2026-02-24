@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for mibe module."""
 
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -300,6 +301,60 @@ class TestProcessCodexEvent:
                 "type": "function_call",
                 "name": "some_other_tool",
                 "arguments": "{}",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        await mibe.process_codex_event(event, path, mock_notifier)
+
+        mock_notifier.speak.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_codex_exec_command_require_escalated_triggers_confirmation_tts(
+        self, tmp_path
+    ):
+        path = tmp_path / "codex.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": json.dumps(
+                    {
+                        "cmd": "pnpm add vite@latest",
+                        "sandbox_permissions": "require_escalated",
+                        "justification": "Do you want to allow updating dependencies?",
+                    }
+                ),
+                "call_id": "call_exec_1",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        await mibe.process_codex_event(event, path, mock_notifier)
+
+        mock_notifier.stop_keepalive.assert_called_once()
+        mock_notifier.restore_volume.assert_called_once()
+        mock_notifier.speak.assert_called_once()
+        speak_text = mock_notifier.speak.call_args.args[0]
+        assert mibe.MESSAGES["codex_input_required"] in speak_text
+        assert "allow updating dependencies" in speak_text
+
+    @pytest.mark.asyncio
+    async def test_codex_exec_command_without_escalation_ignored(self, tmp_path):
+        path = tmp_path / "codex.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": json.dumps(
+                    {
+                        "cmd": "echo hi",
+                        "sandbox_permissions": "use_default",
+                    }
+                ),
+                "call_id": "call_exec_2",
             },
         }
 
