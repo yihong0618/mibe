@@ -151,6 +151,29 @@ class XiaoAiNotifier:
         self._saved_volume: int | None = None
         self._keepalive_task: asyncio.Task | None = None
 
+    @staticmethod
+    def _parse_playing_flag(value: object) -> bool | None:
+        """Parse a player state value into playing/idle/unknown."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            if value == 1:
+                return True
+            if value == 0:
+                return False
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if not normalized:
+                return None
+            if normalized.isdigit():
+                return XiaoAiNotifier._parse_playing_flag(int(normalized))
+            if normalized in {"play", "playing", "start", "started"}:
+                return True
+            if normalized in {"idle", "stop", "stopped", "pause", "paused"}:
+                return False
+        return None
+
     async def login(self) -> None:
         mi_user = os.environ.get("MI_USER", "")
         mi_pass = os.environ.get("MI_PASS", "")
@@ -240,14 +263,49 @@ class XiaoAiNotifier:
 
     # -- keepalive: periodically send silent TTS to keep the light on --
 
+    async def is_playing(self) -> bool | None:
+        """Return whether the speaker is currently playing media."""
+        if not self._mina or not self._device_id:
+            return None
+        try:
+            status = await self._mina.player_get_status(self._device_id)
+            info_raw = status.get("data", {}).get("info", "{}")
+            info = json.loads(info_raw)
+        except Exception:  # noqa: BLE001
+            return None
+
+        if not isinstance(info, dict):
+            return None
+
+        for key in ("isPlaying", "playing", "status", "playStatus", "playerStatus"):
+            parsed = self._parse_playing_flag(info.get(key))
+            if parsed is not None:
+                return parsed
+
+        return None
+
+    async def _keepalive_tick(self) -> None:
+        """Run one keepalive cycle with playback-aware guard."""
+        playing = await self.is_playing()
+        if playing is True:
+            if self.verbose:
+                print("[mibe] keepalive skipped: device playing")
+            return
+        if playing is None:
+            if self.verbose:
+                print("[mibe] keepalive skipped: status unknown")
+            return
+
+        if self.verbose:
+            print("[mibe] keepalive tts")
+        await self.speak(KEEPALIVE_TEXT)
+
     async def _keepalive_loop(self) -> None:
         """Send silent TTS at regular intervals so XiaoAi stays lit."""
         try:
             while True:
                 await asyncio.sleep(KEEPALIVE_INTERVAL)
-                if self.verbose:
-                    print("[mibe] keepalive tts")
-                await self.speak(KEEPALIVE_TEXT)
+                await self._keepalive_tick()
         except asyncio.CancelledError:
             pass
 

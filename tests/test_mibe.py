@@ -417,6 +417,77 @@ class TestXiaoAiNotifier:
         assert notifier.verbose is True
         assert notifier._session is None
 
+    @pytest.mark.asyncio
+    async def test_is_playing_returns_true(self):
+        notifier = mibe.XiaoAiNotifier()
+        notifier._device_id = "dev1"
+        notifier._mina = mock.Mock()
+        notifier._mina.player_get_status = mock.AsyncMock(
+            return_value={"data": {"info": json.dumps({"status": "playing"})}}
+        )
+
+        assert await notifier.is_playing() is True
+
+    @pytest.mark.asyncio
+    async def test_is_playing_returns_false(self):
+        notifier = mibe.XiaoAiNotifier()
+        notifier._device_id = "dev1"
+        notifier._mina = mock.Mock()
+        notifier._mina.player_get_status = mock.AsyncMock(
+            return_value={"data": {"info": json.dumps({"isPlaying": False})}}
+        )
+
+        assert await notifier.is_playing() is False
+
+    @pytest.mark.asyncio
+    async def test_is_playing_returns_none_on_exception_or_unknown(self):
+        notifier = mibe.XiaoAiNotifier()
+        notifier._device_id = "dev1"
+        notifier._mina = mock.Mock()
+
+        notifier._mina.player_get_status = mock.AsyncMock(side_effect=RuntimeError("x"))
+        assert await notifier.is_playing() is None
+
+        notifier._mina.player_get_status = mock.AsyncMock(
+            return_value={"data": {"info": "{not-json"}}
+        )
+        assert await notifier.is_playing() is None
+
+        notifier._mina.player_get_status = mock.AsyncMock(
+            return_value={"data": {"info": json.dumps({"volume": 12})}}
+        )
+        assert await notifier.is_playing() is None
+
+    @pytest.mark.asyncio
+    async def test_keepalive_tick_skips_when_device_is_playing(self):
+        notifier = mibe.XiaoAiNotifier()
+        notifier.is_playing = mock.AsyncMock(return_value=True)
+        notifier.speak = mock.AsyncMock()
+
+        await notifier._keepalive_tick()
+
+        notifier.speak.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_keepalive_tick_skips_when_status_unknown(self):
+        notifier = mibe.XiaoAiNotifier()
+        notifier.is_playing = mock.AsyncMock(return_value=None)
+        notifier.speak = mock.AsyncMock()
+
+        await notifier._keepalive_tick()
+
+        notifier.speak.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_keepalive_tick_speaks_when_device_is_idle(self):
+        notifier = mibe.XiaoAiNotifier()
+        notifier.is_playing = mock.AsyncMock(return_value=False)
+        notifier.speak = mock.AsyncMock()
+
+        await notifier._keepalive_tick()
+
+        notifier.speak.assert_called_once_with(mibe.KEEPALIVE_TEXT)
+
 
 class TestReadNewLines:
     """Tests for read_new_lines function."""
