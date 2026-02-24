@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import signal
 import sys
 from pathlib import Path
@@ -40,6 +41,7 @@ KIMI_COMPLETION_SILENCE = 5.0
 # Configurable settings (can be overridden via config file)
 SETTINGS: dict[str, float] = {
     "kimi_completion_silence": KIMI_COMPLETION_SILENCE,
+    "codex_input_question_max_chars": 80,
 }
 
 # Default TTS messages for each event type.
@@ -47,6 +49,12 @@ DEFAULT_MESSAGES: dict[str, str] = {
     "codex_started": "codex启动",
     "codex_complete": "codex完成",
     "codex_aborted": "codex中断",
+    "codex_input_required": "codex需要你确认",
+    "codex_input_single_template": "{alert_text}。{first_question}",
+    "codex_input_multi_template": (
+        "{alert_text}，共有{question_count}个问题。第一个问题：{first_question}"
+    ),
+    "codex_input_fallback_question": "请查看终端中的问题",
     "kimi_started": "kimi启动",
     "kimi_complete": "kimi完成",
 }
@@ -284,20 +292,84 @@ def list_session_files(sessions_dir: Path, pattern: str = "*.jsonl") -> list[Pat
 CODEX_WATCHED_EVENTS = frozenset({"task_started", "task_complete", "turn_aborted"})
 
 
-async def process_codex_event(event: dict, notifier: XiaoAiNotifier) -> None:
-    """Process a single Codex event."""
-    if event.get("type") != "event_msg":
-        return
-    payload = event.get("payload")
-    if not isinstance(payload, dict):
-        return
+def _sanitize_codex_question_text(text: object) -> str:
+    """Normalize question text for TTS and cap length."""
+    if not isinstance(text, str):
+        return ""
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if not normalized:
+        return ""
 
+    max_chars = int(SETTINGS.get("codex_input_question_max_chars", 80))
+    if max_chars > 0 and len(normalized) > max_chars:
+        suffix = "，后续请看终端"
+        trimmed = normalized[:max_chars].rstrip()
+        return f"{trimmed}{suffix}"
+    return normalized
+
+
+def _build_codex_request_user_input_tts(payload: dict) -> tuple[str, int]:
+    """Build TTS text for Codex request_user_input function call."""
+    alert_text = MESSAGES["codex_input_required"]
+    fallback_question = MESSAGES["codex_input_fallback_question"]
+    first_question = fallback_question
+    question_count = 0
+
+    arguments = payload.get("arguments")
+    parsed: object = None
+    if isinstance(arguments, str) and arguments.strip():
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError:
+            parsed = None
+
+    if isinstance(parsed, dict):
+        raw_questions = parsed.get("questions")
+        if isinstance(raw_questions, list):
+            question_count = len(raw_questions)
+            first_question_text: str | None = None
+            for item in raw_questions:
+                if not isinstance(item, dict):
+                    continue
+                candidate = _sanitize_codex_question_text(item.get("question"))
+                if not candidate:
+                    candidate = _sanitize_codex_question_text(item.get("header"))
+                if candidate:
+                    first_question_text = candidate
+                    break
+            if first_question_text:
+                first_question = first_question_text
+
+    if not _sanitize_codex_question_text(first_question):
+        first_question = fallback_question
+
+    template_vars = {
+        "alert_text": alert_text,
+        "question_count": question_count,
+        "first_question": first_question,
+    }
+
+    if question_count > 1:
+        return (
+            MESSAGES["codex_input_multi_template"].format(**template_vars),
+            question_count,
+        )
+    return (
+        MESSAGES["codex_input_single_template"].format(**template_vars),
+        question_count,
+    )
+
+
+async def _handle_codex_task_event(
+    payload: dict, path: Path, notifier: XiaoAiNotifier
+) -> None:
+    """Handle Codex task lifecycle events."""
     event_type = payload.get("type")
     if event_type not in CODEX_WATCHED_EVENTS:
         return
 
     turn_id = payload.get("turn_id")
-    print(f"[mibe] codex {event_type} turn_id={turn_id}", flush=True)
+    print(f"[mibe] codex {event_type} turn_id={turn_id} path={path}", flush=True)
 
     if event_type == "task_started":
         await notifier.speak(MESSAGES["codex_started"])
@@ -309,6 +381,43 @@ async def process_codex_event(event: dict, notifier: XiaoAiNotifier) -> None:
         await notifier.restore_volume()
         msg_key = "codex_complete" if event_type == "task_complete" else "codex_aborted"
         await notifier.speak(MESSAGES[msg_key])
+
+
+async def _handle_codex_request_user_input(
+    payload: dict, path: Path, notifier: XiaoAiNotifier
+) -> None:
+    """Handle Codex request_user_input function call events."""
+    if payload.get("type") != "function_call":
+        return
+    if payload.get("name") != "request_user_input":
+        return
+
+    tts_text, question_count = _build_codex_request_user_input_tts(payload)
+    call_id = payload.get("call_id")
+    print(
+        "[mibe] codex request_user_input "
+        f"call_id={call_id} questions={question_count} path={path}",
+        flush=True,
+    )
+
+    await notifier.stop_keepalive()
+    await notifier.restore_volume()
+    await notifier.speak(tts_text)
+
+
+async def process_codex_event(
+    event: dict, path: Path, notifier: XiaoAiNotifier
+) -> None:
+    """Process a single Codex event."""
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return
+
+    event_kind = event.get("type")
+    if event_kind == "event_msg":
+        await _handle_codex_task_event(payload, path, notifier)
+    elif event_kind == "response_item":
+        await _handle_codex_request_user_input(payload, path, notifier)
 
 
 # ---------------------------------------------------------------------------

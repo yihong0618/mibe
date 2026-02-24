@@ -52,10 +52,13 @@ uv run python mibe.py monitor
 | Codex `task_started` | codex started | Mute after broadcast, send silent TTS periodically to keep light on |
 | Codex `task_complete` | codex completed | Restore volume, then broadcast |
 | Codex `turn_aborted` | codex aborted | Restore volume, then broadcast |
+| Codex `request_user_input` (function call) | codex needs your input + question text | Stop keepalive, restore volume, broadcast, and keep volume unmuted while waiting for user response |
 | Kimi `TurnBegin` | kimi started | Mute after broadcast, send silent TTS periodically to keep light on |
 | Kimi `TurnEnd` | kimi completed | Restore volume, then broadcast |
 
 Volume is automatically restored on exit (Ctrl+C / SIGTERM).
+When Codex asks a question via `request_user_input`, mibe broadcasts a short question summary.
+For multiple questions, it broadcasts the count plus the first question only.
 
 ## Configuration File
 
@@ -74,6 +77,12 @@ Configuration file search paths (in priority order):
 codex_started = "codex started"
 codex_complete = "codex completed"
 codex_aborted = "codex aborted"
+codex_input_required = "codex needs your input"
+# Template placeholders: {alert_text}, {first_question}
+codex_input_single_template = "{alert_text}. {first_question}"
+# Template placeholders: {alert_text}, {question_count}, {first_question}
+codex_input_multi_template = "{alert_text}. There are {question_count} questions. First question: {first_question}"
+codex_input_fallback_question = "Please check the question in the terminal"
 
 # Kimi related messages
 kimi_started = "kimi started"
@@ -82,7 +91,18 @@ kimi_complete = "kimi completed"
 [settings]
 # Silence duration for Kimi completion detection (seconds)
 kimi_completion_silence = 2.0
+# Max chars from the first question to read in TTS (avoid overly long speech)
+codex_input_question_max_chars = 80
 ```
+
+### Codex Input Prompt Templates
+
+When mibe detects a Codex `request_user_input` function call, it broadcasts a question prompt.
+
+- Trigger: `response_item -> function_call(name="request_user_input")`
+- Template placeholders: `{alert_text}`, `{question_count}`, `{first_question}`
+- Multi-question behavior: broadcast summary of the first question (plus total count)
+- Long questions are truncated using `codex_input_question_max_chars` and then users can read the full text in the terminal
 
 Copy `config.toml.example` as a starting point:
 
