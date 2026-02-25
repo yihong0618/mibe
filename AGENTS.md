@@ -9,6 +9,13 @@
 
 Keep new modules small and focused. If `mibe.py` grows, split by responsibility (e.g., config parsing, event parsing, notifier client) under a package directory.
 
+## Codex Session Event Handling
+- Treat Codex `response_item -> function_call(name="request_user_input")` as a user confirmation/input event.
+- Also treat Codex `response_item -> function_call(name="exec_command")` with `arguments.sandbox_permissions == "require_escalated"` as a user confirmation event.
+- Use the same handling strategy for both confirmation events: stop keepalive, restore volume, and broadcast a confirmation prompt.
+- For `exec_command` escalation prompts, prefer `arguments.justification` for TTS text; fall back to a sanitized `arguments.cmd` summary.
+- Add/update tests when changing Codex session parsing rules (unit tests + file-monitor integration coverage).
+
 ## Build, Test, and Development Commands
 Use `uv` for dependency management and execution.
 - `make install`: install runtime + dev dependencies via `uv sync`.

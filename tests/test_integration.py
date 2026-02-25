@@ -174,3 +174,67 @@ class TestFileMonitoring:
         mock_notifier.speak.assert_called_once()
         speak_text = mock_notifier.speak.call_args.args[0]
         assert "请确认是否继续部署" in speak_text
+
+    @pytest.mark.asyncio
+    async def test_read_new_lines_processes_codex_exec_command_escalation(self, tmp_path):
+        """Test file reader triggers TTS for exec_command escalation approval."""
+        path = tmp_path / "session.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": json.dumps(
+                    {
+                        "cmd": "pnpm add -D vite@latest",
+                        "sandbox_permissions": "require_escalated",
+                        "justification": "Do you want to allow updating dependencies?",
+                    }
+                ),
+                "call_id": "call_exec_integration",
+            },
+        }
+        path.write_text(json.dumps(event, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        offsets: dict[Path, int] = {}
+        mock_notifier = mock.AsyncMock()
+
+        await mibe.read_new_lines(
+            path, offsets, mock_notifier, mibe.process_codex_event
+        )
+
+        mock_notifier.speak.assert_called_once()
+        speak_text = mock_notifier.speak.call_args.args[0]
+        assert "allow updating dependencies" in speak_text
+
+    @pytest.mark.asyncio
+    async def test_read_new_lines_processes_codex_future_tool_escalation(self, tmp_path):
+        """Test file reader triggers TTS for any function_call escalation approval."""
+        path = tmp_path / "session.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "future_tool",
+                "arguments": json.dumps(
+                    {
+                        "cmd": "do future action",
+                        "sandbox_permissions": "require_escalated",
+                        "justification": "Do you want to allow a future tool action?",
+                    }
+                ),
+                "call_id": "call_future_integration",
+            },
+        }
+        path.write_text(json.dumps(event, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        offsets: dict[Path, int] = {}
+        mock_notifier = mock.AsyncMock()
+
+        await mibe.read_new_lines(
+            path, offsets, mock_notifier, mibe.process_codex_event
+        )
+
+        mock_notifier.speak.assert_called_once()
+        speak_text = mock_notifier.speak.call_args.args[0]
+        assert "future tool action" in speak_text

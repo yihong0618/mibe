@@ -23,5 +23,5 @@ kimi_complete = "kimi完成"
 # 如果在指定时间内没有新消息，则认为会话已完成
 # 如果 Kimi 在处理长任务时误判为完成，可以适当增大此值
 kimi_completion_silence = 2.0
-# 提问提醒中朗读的第一个问题最大字符数（避免 TTS 过长）
-codex_input_question_max_chars = 80
+# 提问提醒中朗读的第一个问题最大词数（中英文兼容计数：英文词块 + 汉字）
+codex_input_question_max_words = 160

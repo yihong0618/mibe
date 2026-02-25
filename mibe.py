@@ -41,7 +41,7 @@ KIMI_COMPLETION_SILENCE = 5.0
 # Configurable settings (can be overridden via config file)
 SETTINGS: dict[str, float] = {
     "kimi_completion_silence": KIMI_COMPLETION_SILENCE,
-    "codex_input_question_max_chars": 80,
+    "codex_input_question_max_words": 160,
 }
 
 # Default TTS messages for each event type.
@@ -151,6 +151,29 @@ class XiaoAiNotifier:
         self._saved_volume: int | None = None
         self._keepalive_task: asyncio.Task | None = None
 
+    @staticmethod
+    def _parse_playing_flag(value: object) -> bool | None:
+        """Parse a player state value into playing/idle/unknown."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            if value == 1:
+                return True
+            if value == 0:
+                return False
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if not normalized:
+                return None
+            if normalized.isdigit():
+                return XiaoAiNotifier._parse_playing_flag(int(normalized))
+            if normalized in {"play", "playing", "start", "started"}:
+                return True
+            if normalized in {"idle", "stop", "stopped", "pause", "paused"}:
+                return False
+        return None
+
     async def login(self) -> None:
         mi_user = os.environ.get("MI_USER", "")
         mi_pass = os.environ.get("MI_PASS", "")
@@ -240,14 +263,49 @@ class XiaoAiNotifier:
 
     # -- keepalive: periodically send silent TTS to keep the light on --
 
+    async def is_playing(self) -> bool | None:
+        """Return whether the speaker is currently playing media."""
+        if not self._mina or not self._device_id:
+            return None
+        try:
+            status = await self._mina.player_get_status(self._device_id)
+            info_raw = status.get("data", {}).get("info", "{}")
+            info = json.loads(info_raw)
+        except Exception:  # noqa: BLE001
+            return None
+
+        if not isinstance(info, dict):
+            return None
+
+        for key in ("isPlaying", "playing", "status", "playStatus", "playerStatus"):
+            parsed = self._parse_playing_flag(info.get(key))
+            if parsed is not None:
+                return parsed
+
+        return None
+
+    async def _keepalive_tick(self) -> None:
+        """Run one keepalive cycle with playback-aware guard."""
+        playing = await self.is_playing()
+        if playing is True:
+            if self.verbose:
+                print("[mibe] keepalive skipped: device playing")
+            return
+        if playing is None:
+            if self.verbose:
+                print("[mibe] keepalive skipped: status unknown")
+            return
+
+        if self.verbose:
+            print("[mibe] keepalive tts")
+        await self.speak(KEEPALIVE_TEXT)
+
     async def _keepalive_loop(self) -> None:
         """Send silent TTS at regular intervals so XiaoAi stays lit."""
         try:
             while True:
                 await asyncio.sleep(KEEPALIVE_INTERVAL)
-                if self.verbose:
-                    print("[mibe] keepalive tts")
-                await self.speak(KEEPALIVE_TEXT)
+                await self._keepalive_tick()
         except asyncio.CancelledError:
             pass
 
@@ -290,20 +348,22 @@ def list_session_files(sessions_dir: Path, pattern: str = "*.jsonl") -> list[Pat
 # ---------------------------------------------------------------------------
 
 CODEX_WATCHED_EVENTS = frozenset({"task_started", "task_complete", "turn_aborted"})
+CODEX_TTS_WORD_TOKEN_RE = re.compile(r"[\u3400-\u9fff]|[^\s\u3400-\u9fff]+")
 
 
 def _sanitize_codex_question_text(text: object) -> str:
-    """Normalize question text for TTS and cap length."""
+    """Normalize question text for TTS and cap by CJK/English-compatible tokens."""
     if not isinstance(text, str):
         return ""
     normalized = re.sub(r"\s+", " ", text).strip()
     if not normalized:
         return ""
 
-    max_chars = int(SETTINGS.get("codex_input_question_max_chars", 80))
-    if max_chars > 0 and len(normalized) > max_chars:
+    max_words = int(SETTINGS.get("codex_input_question_max_words", 160))
+    token_iter = list(CODEX_TTS_WORD_TOKEN_RE.finditer(normalized))
+    if max_words > 0 and len(token_iter) > max_words:
         suffix = "，后续请看终端"
-        trimmed = normalized[:max_chars].rstrip()
+        trimmed = normalized[: token_iter[max_words - 1].end()].rstrip()
         return f"{trimmed}{suffix}"
     return normalized
 
@@ -360,6 +420,38 @@ def _build_codex_request_user_input_tts(payload: dict) -> tuple[str, int]:
     )
 
 
+def _build_codex_escalation_confirmation_tts(payload: dict) -> tuple[str, bool]:
+    """Build TTS text for function calls requiring escalated permissions."""
+    if payload.get("type") != "function_call":
+        return "", False
+
+    arguments = payload.get("arguments")
+    parsed: object = None
+    if isinstance(arguments, str) and arguments.strip():
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError:
+            parsed = None
+
+    if not isinstance(parsed, dict):
+        return "", False
+    if parsed.get("sandbox_permissions") != "require_escalated":
+        return "", False
+
+    prompt = _sanitize_codex_question_text(parsed.get("justification"))
+    if not prompt:
+        prompt = _sanitize_codex_question_text(parsed.get("cmd"))
+    if not prompt:
+        prompt = MESSAGES["codex_input_fallback_question"]
+
+    tts_text = MESSAGES["codex_input_single_template"].format(
+        alert_text=MESSAGES["codex_input_required"],
+        question_count=1,
+        first_question=prompt,
+    )
+    return tts_text, True
+
+
 async def _handle_codex_task_event(
     payload: dict, path: Path, notifier: XiaoAiNotifier
 ) -> None:
@@ -405,6 +497,27 @@ async def _handle_codex_request_user_input(
     await notifier.speak(tts_text)
 
 
+async def _handle_codex_escalation_confirmation(
+    payload: dict, path: Path, notifier: XiaoAiNotifier
+) -> None:
+    """Handle function call events that require user approval."""
+    tts_text, matched = _build_codex_escalation_confirmation_tts(payload)
+    if not matched:
+        return
+
+    call_id = payload.get("call_id")
+    tool_name = payload.get("name")
+    print(
+        "[mibe] codex escalation_confirmation "
+        f"tool={tool_name} call_id={call_id} path={path}",
+        flush=True,
+    )
+
+    await notifier.stop_keepalive()
+    await notifier.restore_volume()
+    await notifier.speak(tts_text)
+
+
 async def process_codex_event(
     event: dict, path: Path, notifier: XiaoAiNotifier
 ) -> None:
@@ -418,6 +531,7 @@ async def process_codex_event(
         await _handle_codex_task_event(payload, path, notifier)
     elif event_kind == "response_item":
         await _handle_codex_request_user_input(payload, path, notifier)
+        await _handle_codex_escalation_confirmation(payload, path, notifier)
 
 
 # ---------------------------------------------------------------------------

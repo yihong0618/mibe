@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for mibe module."""
 
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -76,7 +77,6 @@ kimi_completion_silence = 5.0
         finally:
             # Restore original value
             mibe.SETTINGS["kimi_completion_silence"] = original_value
-
 
 class TestListSessionFiles:
     """Tests for list_session_files function."""
@@ -269,7 +269,7 @@ class TestProcessCodexEvent:
     @pytest.mark.asyncio
     async def test_codex_request_user_input_truncates_long_question(self, tmp_path):
         path = tmp_path / "codex.jsonl"
-        long_question = "A" * 120
+        long_question = " ".join(f"word{i}" for i in range(30))
         event = {
             "type": "response_item",
             "payload": {
@@ -281,14 +281,45 @@ class TestProcessCodexEvent:
         }
 
         mock_notifier = mock.AsyncMock()
-        original_max = mibe.SETTINGS["codex_input_question_max_chars"]
+        original_max = mibe.SETTINGS["codex_input_question_max_words"]
         try:
-            mibe.SETTINGS["codex_input_question_max_chars"] = 20
+            mibe.SETTINGS["codex_input_question_max_words"] = 5
             await mibe.process_codex_event(event, path, mock_notifier)
         finally:
-            mibe.SETTINGS["codex_input_question_max_chars"] = original_max
+            mibe.SETTINGS["codex_input_question_max_words"] = original_max
 
         speak_text = mock_notifier.speak.call_args.args[0]
+        assert "word0 word1 word2 word3 word4" in speak_text
+        assert "word5" not in speak_text
+        assert "后续请看终端" in speak_text
+
+    @pytest.mark.asyncio
+    async def test_codex_request_user_input_truncates_chinese_without_spaces(
+        self, tmp_path
+    ):
+        path = tmp_path / "codex.jsonl"
+        long_question = "请确认是否继续部署到生产环境并通知相关同学"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "request_user_input",
+                "arguments": ('{"questions":[{"question":"' + long_question + '"}]}'),
+                "call_id": "call_4_cn",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        original_max = mibe.SETTINGS["codex_input_question_max_words"]
+        try:
+            mibe.SETTINGS["codex_input_question_max_words"] = 7
+            await mibe.process_codex_event(event, path, mock_notifier)
+        finally:
+            mibe.SETTINGS["codex_input_question_max_words"] = original_max
+
+        speak_text = mock_notifier.speak.call_args.args[0]
+        assert "请确认是否继续" in speak_text
+        assert "部署到生产环境并通知相关同学" not in speak_text
         assert "后续请看终端" in speak_text
 
     @pytest.mark.asyncio
@@ -300,6 +331,155 @@ class TestProcessCodexEvent:
                 "type": "function_call",
                 "name": "some_other_tool",
                 "arguments": "{}",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        await mibe.process_codex_event(event, path, mock_notifier)
+
+        mock_notifier.speak.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_codex_exec_command_require_escalated_triggers_confirmation_tts(
+        self, tmp_path
+    ):
+        path = tmp_path / "codex.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": json.dumps(
+                    {
+                        "cmd": "pnpm add vite@latest",
+                        "sandbox_permissions": "require_escalated",
+                        "justification": "Do you want to allow updating dependencies?",
+                    }
+                ),
+                "call_id": "call_exec_1",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        await mibe.process_codex_event(event, path, mock_notifier)
+
+        mock_notifier.stop_keepalive.assert_called_once()
+        mock_notifier.restore_volume.assert_called_once()
+        mock_notifier.speak.assert_called_once()
+        speak_text = mock_notifier.speak.call_args.args[0]
+        assert mibe.MESSAGES["codex_input_required"] in speak_text
+        assert "allow updating dependencies" in speak_text
+
+    @pytest.mark.asyncio
+    async def test_codex_exec_command_without_escalation_ignored(self, tmp_path):
+        path = tmp_path / "codex.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": json.dumps(
+                    {
+                        "cmd": "echo hi",
+                        "sandbox_permissions": "use_default",
+                    }
+                ),
+                "call_id": "call_exec_2",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        await mibe.process_codex_event(event, path, mock_notifier)
+
+        mock_notifier.speak.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_codex_future_tool_require_escalated_triggers_confirmation_tts(
+        self, tmp_path
+    ):
+        path = tmp_path / "codex.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "future_tool",
+                "arguments": json.dumps(
+                    {
+                        "cmd": "do something",
+                        "sandbox_permissions": "require_escalated",
+                        "justification": "Do you want to allow this future tool action?",
+                    }
+                ),
+                "call_id": "call_future_1",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        await mibe.process_codex_event(event, path, mock_notifier)
+
+        mock_notifier.speak.assert_called_once()
+        speak_text = mock_notifier.speak.call_args.args[0]
+        assert "future tool action" in speak_text
+
+    @pytest.mark.asyncio
+    async def test_codex_escalation_confirmation_falls_back_to_cmd(self, tmp_path):
+        path = tmp_path / "codex.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "future_tool",
+                "arguments": json.dumps(
+                    {
+                        "cmd": "pnpm install dependencies",
+                        "sandbox_permissions": "require_escalated",
+                    }
+                ),
+                "call_id": "call_future_2",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        await mibe.process_codex_event(event, path, mock_notifier)
+
+        speak_text = mock_notifier.speak.call_args.args[0]
+        assert "pnpm install dependencies" in speak_text
+
+    @pytest.mark.asyncio
+    async def test_codex_escalation_confirmation_falls_back_to_generic_prompt(
+        self, tmp_path
+    ):
+        path = tmp_path / "codex.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "future_tool",
+                "arguments": json.dumps(
+                    {
+                        "sandbox_permissions": "require_escalated",
+                    }
+                ),
+                "call_id": "call_future_3",
+            },
+        }
+
+        mock_notifier = mock.AsyncMock()
+        await mibe.process_codex_event(event, path, mock_notifier)
+
+        speak_text = mock_notifier.speak.call_args.args[0]
+        assert mibe.MESSAGES["codex_input_fallback_question"] in speak_text
+
+    @pytest.mark.asyncio
+    async def test_codex_escalation_confirmation_ignores_bad_arguments(self, tmp_path):
+        path = tmp_path / "codex.jsonl"
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "future_tool",
+                "arguments": "{not-json",
+                "call_id": "call_future_4",
             },
         }
 
@@ -361,6 +541,77 @@ class TestXiaoAiNotifier:
         notifier = mibe.XiaoAiNotifier(verbose=True)
         assert notifier.verbose is True
         assert notifier._session is None
+
+    @pytest.mark.asyncio
+    async def test_is_playing_returns_true(self):
+        notifier = mibe.XiaoAiNotifier()
+        notifier._device_id = "dev1"
+        notifier._mina = mock.Mock()
+        notifier._mina.player_get_status = mock.AsyncMock(
+            return_value={"data": {"info": json.dumps({"status": "playing"})}}
+        )
+
+        assert await notifier.is_playing() is True
+
+    @pytest.mark.asyncio
+    async def test_is_playing_returns_false(self):
+        notifier = mibe.XiaoAiNotifier()
+        notifier._device_id = "dev1"
+        notifier._mina = mock.Mock()
+        notifier._mina.player_get_status = mock.AsyncMock(
+            return_value={"data": {"info": json.dumps({"isPlaying": False})}}
+        )
+
+        assert await notifier.is_playing() is False
+
+    @pytest.mark.asyncio
+    async def test_is_playing_returns_none_on_exception_or_unknown(self):
+        notifier = mibe.XiaoAiNotifier()
+        notifier._device_id = "dev1"
+        notifier._mina = mock.Mock()
+
+        notifier._mina.player_get_status = mock.AsyncMock(side_effect=RuntimeError("x"))
+        assert await notifier.is_playing() is None
+
+        notifier._mina.player_get_status = mock.AsyncMock(
+            return_value={"data": {"info": "{not-json"}}
+        )
+        assert await notifier.is_playing() is None
+
+        notifier._mina.player_get_status = mock.AsyncMock(
+            return_value={"data": {"info": json.dumps({"volume": 12})}}
+        )
+        assert await notifier.is_playing() is None
+
+    @pytest.mark.asyncio
+    async def test_keepalive_tick_skips_when_device_is_playing(self):
+        notifier = mibe.XiaoAiNotifier()
+        notifier.is_playing = mock.AsyncMock(return_value=True)
+        notifier.speak = mock.AsyncMock()
+
+        await notifier._keepalive_tick()
+
+        notifier.speak.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_keepalive_tick_skips_when_status_unknown(self):
+        notifier = mibe.XiaoAiNotifier()
+        notifier.is_playing = mock.AsyncMock(return_value=None)
+        notifier.speak = mock.AsyncMock()
+
+        await notifier._keepalive_tick()
+
+        notifier.speak.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_keepalive_tick_speaks_when_device_is_idle(self):
+        notifier = mibe.XiaoAiNotifier()
+        notifier.is_playing = mock.AsyncMock(return_value=False)
+        notifier.speak = mock.AsyncMock()
+
+        await notifier._keepalive_tick()
+
+        notifier.speak.assert_called_once_with(mibe.KEEPALIVE_TEXT)
 
 
 class TestReadNewLines:
